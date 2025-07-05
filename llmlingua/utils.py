@@ -3,6 +3,7 @@ import os
 import random
 import re
 import string
+import time
 
 import numpy as np
 import torch
@@ -238,3 +239,32 @@ def remove_consecutive_commas(text):
     text = re.sub(r",\s*", ",", text)
     text = re.sub(r",+", ",", text)
     return text
+
+
+def compute_adjusted_time_decay(
+    timestamp: float,
+    rating: float,
+    lambda_days: float,
+    max_rating: float = 5.0,
+) -> float:
+    """Compute a combined time and rating decay factor.
+
+    Parameters
+    ----------
+    timestamp : float
+        Unix timestamp for the segment.
+    rating : float
+        User provided rating for the segment.
+    lambda_days : float, optional
+        Controls the recency decay rate, by default 30.0.
+    max_rating : float, optional
+        Maximum rating used for normalisation, by default 5.0.
+
+    Returns
+    -------
+    float
+        Decay factor derived from recency and rating.
+    """
+
+    days_ago = (time.time() - timestamp) / 86400.0
+    return float(np.exp(-days_ago / lambda_days) * (rating / max_rating))

@@ -28,6 +28,7 @@ from .utils import (
     is_begin_of_new_word,
     process_structured_json_data,
     remove_consecutive_commas,
+    compute_adjusted_time_decay,
     replace_added_token,
     seed_everything,
 )
@@ -463,6 +464,7 @@ class PromptCompressor:
         drop_consecutive: bool = False,
         chunk_end_tokens: List[str] = [".", "\n"],
         strict_preserve_uncompressed: bool = True,
+        metadata_list: List[dict] = None,
     ):
         """
         Compresses the given context.
@@ -613,6 +615,7 @@ class PromptCompressor:
                 context_segs_rate=context_segs_rate,
                 context_segs_compress=context_segs_compress,
                 strict_preserve_uncompressed=strict_preserve_uncompressed,
+                metadata_list  = metadata_list,
             )
             if context_segs is not None:
                 context_segs = [context_segs[idx] for idx in context_used]
@@ -1185,6 +1188,7 @@ class PromptCompressor:
         context_segs_rate: List[List[float]] = None,
         context_segs_compress: List[List[bool]] = None,
         strict_preserve_uncompressed: bool = True,
+        metadata_list: List[dict] = None,
     ):
         demostrations_sort = self.get_rank_results(
             context,
@@ -1192,6 +1196,7 @@ class PromptCompressor:
             rank_method,
             condition_in_question,
             context_tokens_length,
+            metadata_list=metadata_list,
         )
 
         if target_token < 0:
@@ -1223,6 +1228,10 @@ class PromptCompressor:
                 _ for idx, _ in enumerate(used) if idx % 2 == 1
             ]
             used = l + r[::-1]
+        elif reorder_context == "score":
+            # Sort used context indices based on final_score in descending order to get the most usefult context first
+            ranked_map = {idx: score for idx, score in demostrations_sort}
+            used = sorted(used, key=lambda x: ranked_map.get(x, 0), reverse=True)
 
         if dynamic_context_compression_ratio > 0:
             N = len(used)
@@ -1362,6 +1371,7 @@ class PromptCompressor:
                 rank_method,
                 condition_in_question,
                 [0] * len(context_sentences),
+                metadata_list=None,
             )
 
         sentence_flags = [False] * N
@@ -1820,6 +1830,7 @@ class PromptCompressor:
         rank_method: str,
         condition_in_question: str,
         context_tokens_length: list,
+        metadata_list: list = None,
     ):
         def get_distance_bm25(corpus, query):
             from rank_bm25 import BM25Okapi
@@ -2027,7 +2038,7 @@ class PromptCompressor:
             idx = [(ii, 0) for ii in doc_rank]
             return idx
 
-        def get_distance_longllmlingua(corpus, query):
+        def get_distance_longllmlingua(corpus, query, metadata_list=None):
             context_ppl = [
                 self.get_condition_ppl(
                     d,
@@ -2038,6 +2049,27 @@ class PromptCompressor:
                 - dl * 2 / 250 * 0
                 for d, dl in zip(corpus, context_tokens_length)
             ]
+            if metadata_list is not None:
+                decay = [
+                    compute_adjusted_time_decay(
+                        m["timestamp"],
+                        m["rating"],
+                        m.get("lambda_days", 100.0)  
+                    )                    
+                    for m in metadata_list
+                ]
+                context_ppl = [s * d for s, d in zip(context_ppl, decay)]
+                for idx, (segment, base_score, decay_factor, final_score) in enumerate(
+                    zip(corpus, 
+                        [self.get_condition_ppl(
+                            d, 
+                            query + " We can get the answer to this question in the given documents.",
+                            condition_in_question,
+                        ).cpu().item() for d in corpus], 
+                        decay, 
+                        context_ppl)
+                ):
+                    print(f"[DEBUG] Segment: {segment}\n Base Score: {base_score:.4f}, Time Decay: {decay_factor:.4f}, Final Score: {final_score:.4f}\n")
             sort_direct = -1 if condition_in_question == "none" else 1
             ys = sorted(enumerate(context_ppl), key=lambda x: sort_direct * x[1])
             return ys
@@ -2065,6 +2097,8 @@ class PromptCompressor:
             method = get_distance_voyageai
         elif rank_method == "cohere":
             method = get_distance_cohere
+        if metadata_list is not None and rank_method in ["longllmlingua", "llmlingua"]:
+            return method(context, question, metadata_list=metadata_list)
         return method(context, question)
 
     def segment_structured_context(
