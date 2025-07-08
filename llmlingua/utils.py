@@ -246,8 +246,10 @@ def compute_adjusted_time_decay(
     rating: float,
     lambda_days: float,
     max_rating: float = 5.0,
+    reference_time: float = 1577836800  # Jan 1, 2020 
 ) -> float:
-    """Compute a combined time and rating decay factor.
+    """
+    Compute a combined time and rating decay factor based on a fixed reference time.
 
     Parameters
     ----------
@@ -255,10 +257,12 @@ def compute_adjusted_time_decay(
         Unix timestamp for the segment.
     rating : float
         User provided rating for the segment.
-    lambda_days : float, optional
-        Controls the recency decay rate, by default 30.0.
+    lambda_days : float
+        Controls the recency decay rate.
     max_rating : float, optional
         Maximum rating used for normalisation, by default 5.0.
+    reference_time : float, optional
+        Fixed reference point for time decay, by default Jan 1, 2020.
 
     Returns
     -------
@@ -266,5 +270,6 @@ def compute_adjusted_time_decay(
         Decay factor derived from recency and rating.
     """
 
-    days_ago = (time.time() - timestamp) / 86400.0
-    return float(np.exp(-days_ago / lambda_days) * (rating / max_rating))
+    days_ago = (reference_time - timestamp) / 86400.0  
+    decay = np.exp(-days_ago / lambda_days) * (rating / max_rating)
+    return float(decay)

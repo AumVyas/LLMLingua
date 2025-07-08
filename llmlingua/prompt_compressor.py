@@ -21,7 +21,6 @@ from transformers import (
     AutoModelForTokenClassification,
     AutoTokenizer,
 )
-
 from .utils import (
     TokenClfDataset,
     get_pure_token,
@@ -2072,6 +2071,9 @@ class PromptCompressor:
                     print(f"[DEBUG] Segment: {segment}\n Base Score: {base_score:.4f}, Time Decay: {decay_factor:.4f}, Final Score: {final_score:.4f}\n")
             sort_direct = -1 if condition_in_question == "none" else 1
             ys = sorted(enumerate(context_ppl), key=lambda x: sort_direct * x[1])
+            print("\n[DEBUG] Segments After Sorting by Final Score:\n")
+            for idx, score in ys:
+                print(f"{context[idx]} — Final Score: {context_ppl[idx]:.4f}")
             return ys
 
         method = None
