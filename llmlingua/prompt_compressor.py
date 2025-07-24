@@ -6,6 +6,7 @@ import copy
 import json
 import re
 import string
+import time
 from collections import defaultdict
 from typing import List, Union
 
@@ -297,6 +298,7 @@ class PromptCompressor:
         rank_method: str = "llmlingua",
         concate_question: bool = True,
         strict_preserve_uncompressed: bool = True,
+        metadata_list: List[dict] = None,
     ):
         """
         Compresses the given prompt context based on a specified structure.
@@ -551,6 +553,7 @@ class PromptCompressor:
                 force_reserve_digit=force_reserve_digit,
                 drop_consecutive=drop_consecutive,
                 chunk_end_tokens=chunk_end_tokens,
+                metadata_list=metadata_list,  
             )
         assert (
             rate <= 1.0
@@ -717,6 +720,7 @@ class PromptCompressor:
         rate = 1 / ratio
         return {
             "compressed_prompt": compressed_prompt,
+            "compressed_context_list": context,
             "origin_tokens": origin_tokens,
             "compressed_tokens": compressed_tokens,
             "ratio": f"{ratio:.1f}x",
@@ -743,7 +747,11 @@ class PromptCompressor:
         force_reserve_digit: bool = False,
         drop_consecutive: bool = False,
         chunk_end_tokens: List[str] = [".", "\n"],
+        metadata_list: List[dict] = None, 
     ):
+        # print("[DEBUG LLMLingua-2] Metadata List in compress_prompt_llmlingua2:", metadata_list)
+        # print("[DEBUG LLMLingua-2] Len Metadata:", len(metadata_list) if metadata_list else 0)
+        # print("[DEBUG LLMLingua-2] Len Context:", len(context))
         """
         Compresses the given context, instruction and question.
 
@@ -845,6 +853,7 @@ class PromptCompressor:
                 force_tokens=force_tokens,
                 token_map=token_map,
                 force_reserve_digit=force_reserve_digit,
+                metadata_list=metadata_list,
             )
 
             threshold = np.percentile(
@@ -2048,6 +2057,7 @@ class PromptCompressor:
                 - dl * 2 / 250 * 0
                 for d, dl in zip(corpus, context_tokens_length)
             ]
+
             if metadata_list is not None:
                 decay = [
                     compute_adjusted_time_decay(
@@ -2057,7 +2067,7 @@ class PromptCompressor:
                     )                    
                     for m in metadata_list
                 ]
-                context_ppl = [s * d for s, d in zip(context_ppl, decay)]
+                context_ppl = [s / d if d > 0 else s for s, d in zip(context_ppl, decay)]  # Lower for recent/high-rating
                 for idx, (segment, base_score, decay_factor, final_score) in enumerate(
                     zip(corpus, 
                         [self.get_condition_ppl(
@@ -2189,7 +2199,10 @@ class PromptCompressor:
         force_tokens: List[str] = [],
         token_map: dict = {},
         force_reserve_digit: bool = False,
+        metadata_list: List[dict] = None,  
     ):
+        # print("[DEBUG] Entering __get_context_prob")  
+        
         chunk_list = []
         for chunks in context_list:
             for c in chunks:
@@ -2204,6 +2217,7 @@ class PromptCompressor:
 
         chunk_probs = []
         chunk_words = []
+        global_chunk_idx = 0  
         with torch.no_grad():
             for batch in dataloader:
                 ids = batch["ids"].to(self.device, dtype=torch.long)
@@ -2241,11 +2255,37 @@ class PromptCompressor:
                         valid_token_probs_no_force, convert_mode=token_to_word
                     )
 
+                    print(f"[DEBUG] Chunk {global_chunk_idx} Token Probs (raw): {token_probs}")  
+                    print(f"[DEBUG] Chunk {global_chunk_idx} Word Probs (aggregated, no force): {word_probs_no_force}")  
+
+                    base_avg = sum(word_probs_no_force) / len(word_probs_no_force) if word_probs_no_force else 0
+                    decay_factor = 1.0  
+                    adjusted_avg = base_avg  
+
+                    if metadata_list and global_chunk_idx < len(metadata_list):
+                        m = metadata_list[global_chunk_idx]
+                        decay_factor = compute_adjusted_time_decay(
+                            m.get('timestamp', time.time()),
+                            m.get('rating', 5.0),
+                            m.get('lambda_days', 100.0)
+                        )
+                        adjusted_avg = base_avg * decay_factor if decay_factor > 0 else base_avg  
+                    else:
+                        
+                        print(f"[DEBUG] Chunk {global_chunk_idx}: No metadata or index mismatch - Using default decay 1.0, Base Avg Prob: {base_avg:.4f}, Adjusted Avg Score: {adjusted_avg:.4f}")
+
+                    scale_factor = adjusted_avg / base_avg if base_avg > 0 else 1.0
+                    new_word_probs = [wp * scale_factor for wp in word_probs_no_force]  
+
+                    for w_idx, (wp_base, wp_adj) in enumerate(zip(word_probs_no_force, new_word_probs)):
+                        print(f"[DEBUG] Word {w_idx} ({words[w_idx]}): Base Prob: {wp_base:.4f}, Adjusted Score: {wp_adj:.4f}")
+
                     if "xlm-roberta-large" in self.model_name:
                         for i in range(len(words)):
                             words[i] = words[i].lstrip("▁")
                     chunk_words.append(words)
-                    chunk_probs.append(word_probs_no_force)
+                    chunk_probs.append(new_word_probs)  
+                    global_chunk_idx += 1
 
         prev_idx = 0
         context_probs = []
@@ -2259,10 +2299,11 @@ class PromptCompressor:
                 context_words[-1].extend(chunk_words[prev_idx + i])
             prev_idx = prev_idx + n_chunk
         context_probs = [sum(probs) / len(probs) for probs in context_probs]
+        
+        # print("[DEBUG] Exiting __get_context_prob")  
         return context_probs, context_words
 
     def __chunk_context(self, origin_text, chunk_end_tokens):
-        # leave 2 token for CLS and SEP
         max_len = self.max_seq_len - 2
         origin_list = []
         origin_tokens = self.tokenizer.tokenize(origin_text)

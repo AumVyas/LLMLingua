@@ -240,13 +240,12 @@ def remove_consecutive_commas(text):
     text = re.sub(r",+", ",", text)
     return text
 
-
 def compute_adjusted_time_decay(
     timestamp: float,
     rating: float,
     lambda_days: float,
     max_rating: float = 5.0,
-    reference_time: float = 1577836800  # Jan 1, 2020 
+    reference_time: float = 1609545600 # Jan 2, 2021 
 ) -> float:
     """
     Compute a combined time and rating decay factor based on a fixed reference time.
@@ -270,6 +269,8 @@ def compute_adjusted_time_decay(
         Decay factor derived from recency and rating.
     """
 
-    days_ago = (reference_time - timestamp) / 86400.0  
-    decay = np.exp(-days_ago / lambda_days) * (rating / max_rating)
-    return float(decay)
+    if reference_time is None:
+            reference_time = time.time()
+    days_ago = (reference_time - timestamp) / 86400.0
+    decay = np.exp(-days_ago / lambda_days) * (rating / max_rating)  
+    return decay  
